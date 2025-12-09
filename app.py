@@ -17,11 +17,11 @@ RAPIDAPI_HOST = os.environ.get('RAPIDAPI_HOST')
 RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY')
 
 # --- متغيرات الصور الموحدة (يجب استبدالها بروابط عامة خاصة بك) ---
-# مثال: يجب أن تكون هذه الروابط عامة (Public URLs) لصورك الموحدة
+# يجب تغيير هذه الروابط قبل الدفع!
 IMAGE_URLS = {
-    'GOAL': "https://example.com/images/goal_icon.jpg",  # استبدل هذا
-    'START': "https://example.com/images/start_match.jpg", # استبدل هذا
-    'RED_CARD': "https://example.com/images/red_card.jpg" # استبدل هذا
+    'GOAL': "https://your-domain.com/images/goal_icon.jpg",  # رابط صورة الهدف
+    'START': "https://your-domain.com/images/start_match.jpg", # رابط صورة بداية المباراة
+    'RED_CARD': "https://your-domain.com/images/red_card.jpg" # رابط صورة البطاقة الحمراء
 }
 
 
@@ -40,15 +40,17 @@ def post_to_facebook(message, image_url, language='ar'):
     # تحديد إعدادات التصفية (Targeting)
     if language == 'ar':
         # الجمهور العربي (الدول العربية + اللغة العربية)
+        # 6 = رمز اللغة العربية
         targeting = {
             "geo_locations": {"countries": ["DZ", "EG", "SA", "AE", "MA", "TN", "QA", "KW"]},
-            "locales": [6] # 6 هو رمز اللغة العربية
+            "locales": [6] 
         }
     else: # English (en)
         # الجمهور الأجنبي (بعض الدول غير العربية + اللغة الإنجليزية)
+        # 1 = رمز اللغة الإنجليزية
         targeting = {
             "geo_locations": {"countries": ["US", "GB", "FR", "DE", "CA", "ES"]},
-            "locales": [1] # 1 هو رمز اللغة الإنجليزية
+            "locales": [1] 
         }
     
     # تحويل التصفية إلى نص JSON
@@ -120,8 +122,6 @@ def publish_goal_event(match_details, scorer, current_result):
     )
     post_to_facebook(english_message, IMAGE_URLS['GOAL'], language='en')
 
-# ... يمكن إضافة دوال لـ 'البطاقة الحمراء' و 'إلغاء الهدف' بنفس الهيكلية.
-
 
 # =================================================================
 #                       وظائف API الرياضي والردود
@@ -130,6 +130,7 @@ def publish_goal_event(match_details, scorer, current_result):
 def get_today_matches():
     """
     جلب مباريات اليوم من RapidAPI وعرضها في قائمة بسيطة.
+    ** تم تحديث المسار هنا **
     """
     if not RAPIDAPI_HOST or not RAPIDAPI_KEY:
         return "لا يمكن الاتصال بمصدر البيانات الرياضية حالياً. (راجع RAPIDAPI Keys)"
@@ -137,8 +138,12 @@ def get_today_matches():
     # تحديد التاريخ اليوم بتنسيق YYYY-MM-DD
     today_date = date.today().strftime("%Y-%m-%d")
 
-    # ملاحظة: تم افتراض أن Endpoint هو /fixtures كما في معظم APIs
-    url = f"https://{RAPIDAPI_HOST}/fixtures"
+    # *****************************************************************
+    # التعديل: استخدام المسار الصحيح للـ API الجديد
+    # *****************************************************************
+    url = f"https://{RAPIDAPI_HOST}/get-matches/events-by-date"
+    
+    # البارامتر المطلوب لجلب المباريات باليوم
     querystring = {"date": today_date}
 
     headers = {
@@ -152,6 +157,8 @@ def get_today_matches():
         data = response.json()
         
         match_list = ["*مباريات اليوم:*\n"]
+        
+        # يجب تعديل هذا المنطق لاحقاً ليناسب هيكل JSON للـ API الجديد
         if data and data.get('response'):
             matches = data['response']
             
@@ -159,20 +166,18 @@ def get_today_matches():
                 return "لا توجد مباريات مقررة لهذا اليوم."
                 
             for match in matches:
-                home_team = match['teams']['home']['name']
-                away_team = match['teams']['away']['name']
+                # هذه الحقول مفترضة، وقد تحتاج تعديلها لتناسب الـ API الجديد
+                home_team = match.get('home_team', 'فريق غير معروف')
+                away_team = match.get('away_team', 'فريق غير معروف')
+                match_time = match.get('time', 'N/A')
+                league_name = match.get('league_name', 'غير محددة')
                 
-                # تنسيق الوقت ليكون أوضح
-                fixture_date_time = datetime.fromisoformat(match['fixture']['date'].replace('Z', '+00:00'))
-                local_time = fixture_date_time.strftime("%H:%M") 
-                
-                league_name = match['league']['name']
-                
-                match_list.append(f"*{local_time}* | {home_team} - {away_team} ({league_name})")
+                match_list.append(f"*{match_time}* | {home_team} - {away_team} ({league_name})")
                 
             return "\n".join(match_list)
         
-        return "حدث خطأ في استقبال بيانات المباريات."
+        # إذا فشل تحليل JSON، نطبع رسالة خطأ
+        return f"حدث خطأ في استقبال بيانات المباريات. (الرد: {data})"
 
     except requests.exceptions.RequestException as e:
         print(f"RapidAPI Error in get_today_matches: {e}")
@@ -200,8 +205,6 @@ def send_message(recipient_id, message_text):
         print(f"Message sent successfully to {recipient_id}")
     except requests.exceptions.RequestException as e:
         print(f"Error sending message to {recipient_id}: {e}")
-        if response is not None:
-             print(f"Response details: {response.text}")
 
 
 def handle_message(sender_id, message_text):
@@ -210,22 +213,20 @@ def handle_message(sender_id, message_text):
     response_text = "آسف، لم أجد طلبك. الأوامر المتاحة هي: 'مباريات اليوم'."
     
     if lower_text == 'مباريات اليوم':
-        response_text = get_today_matches() # استدعاء دالة جلب البيانات الحقيقية
+        response_text = get_today_matches() 
     
     elif lower_text in ['مرحبا', 'سلام', 'hi', 'hello']:
         response_text = "أهلاً بك في Goalixy! لمعرفة آخر النتائج، اكتب 'مباريات اليوم'."
         
     elif lower_text == 'اختبار هدف':
-        # *************************************************************************
-        # هذا الأمر للاختبار اليدوي لعمل دالة النشر (يجب إزالته بعد التأكد من عمله)
-        # *************************************************************************
+        # أمر للاختبار اليدوي لعمل دالة النشر والتصفية
         test_details = {
             'home_team': 'الجزائر', 
             'away_team': 'السنغال', 
             'league_name': 'كأس الأمم'
         }
         publish_goal_event(test_details, "رياض محرز", "1-0")
-        response_text = "تم نشر هدف تجريبي بنجاح على الصفحة (اذهب وتحقق من التصفية)!"
+        response_text = "تم نشر هدف تجريبي بنجاح على الصفحة (تحقق من تصفية الجمهور)!"
         
     send_message(sender_id, response_text)
 
@@ -254,7 +255,6 @@ def webhook():
     # 2. استقبال الأحداث ومعالجتها (POST Request)
     elif request.method == 'POST':
         data = request.json
-        # print('Received Webhook Data:', data) # يمكن إزالة هذا السطر بعد الاختبار
 
         if data.get('object') == 'page':
             for entry in data.get('entry', []):
@@ -272,8 +272,6 @@ def webhook():
                     elif messaging_event.get('postback'):
                         payload = messaging_event['postback']['payload']
                         print(f"Received Postback Payload: {payload}")
-                    
-                    # ملاحظة: يمكنك إضافة منطق معالجة لأحداث feed هنا إذا لزم الأمر
 
         return 'EVENT_RECEIVED', 200
         
