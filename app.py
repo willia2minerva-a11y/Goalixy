@@ -1,61 +1,124 @@
 import os
-from flask import Flask, request
+import requests
+from flask import Flask, request, jsonify
 
 # تهيئة تطبيق Flask
 app = Flask(__name__)
 
-# --- متغيرات البيئة ---
-# يجب تعيين هذا المتغير في إعدادات Render (VERIFY_TOKEN)
+# --- متغيرات البيئة (يتم جلبها من إعدادات Render) ---
+# تأكد من أن هذه الأسماء مطابقة تماماً لما في Render
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN') 
 FB_PAGE_TOKEN = os.environ.get('FB_PAGE_TOKEN') 
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 
-# المسار الرئيسي للـ Webhook
-# يجب أن يكون هذا هو الرابط الذي أدخلته في Meta Developers (مثلاً: https://your-app.onrender.com/webhook)
+# --- دالة مساعدة: إرسال رسالة إلى الماسنجر ---
+def send_message(recipient_id, message_text):
+    """
+    تستخدم لإرسال رسالة نصية بسيطة إلى مستخدم معين عبر Messenger Send API.
+    """
+    if not FB_PAGE_TOKEN:
+        print("Error: FB_PAGE_TOKEN is not configured.")
+        return
+
+    params = {
+        "access_token": FB_PAGE_TOKEN
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = {
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": message_text
+        }
+    }
+    
+    # نقطة النهاية (Endpoint) لإرسال رسائل الماسنجر
+    url = "https://graph.facebook.com/v18.0/me/messages" 
+    
+    try:
+        response = requests.post(url, params=params, headers=headers, json=data)
+        response.raise_for_status() # إطلاق استثناء لأي رمز حالة HTTP غير ناجح (4xx أو 5xx)
+        print(f"Message sent successfully to {recipient_id}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending message to {recipient_id}: {e}")
+        if response is not None:
+             print(f"Response details: {response.text}")
+
+
+# --- دالة مساعدة: منطق الردود على الأوامر ---
+def handle_message(sender_id, message_text):
+    """
+    تعالج الرسائل الواردة وتحدد الرد المناسب بناءً على الأمر.
+    """
+    lower_text = message_text.lower().strip()
+    response_text = "آسف، لم أجد طلبك. الأوامر المتاحة هي: 'مباريات اليوم'."
+    
+    if lower_text == 'مباريات اليوم':
+        # *** سيتم تحديث هذا الجزء لاحقاً لربط RapidAPI ***
+        response_text = "جاري البحث عن مباريات اليوم (سيتم توفير النتائج قريباً بعد ربط API الرياضي)."
+    
+    elif lower_text in ['مرحبا', 'سلام', 'hi', 'hello']:
+        response_text = "أهلاً بك في Goalixy! لمعرفة آخر النتائج، اكتب 'مباريات اليوم'."
+        
+    elif lower_text == 'النتيجة':
+        response_text = "الرجاء تحديد المباراة أو الفريق الذي تبحث عن نتيجته."
+        
+    send_message(sender_id, response_text)
+
+
+# --- المسار الرئيسي للـ Webhook ---
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     # 1. التحقق من الـ Webhook (GET Request)
     if request.method == 'GET':
-        # الحصول على البارامترات من فيسبوك
         mode = request.args.get('hub.mode')
         token = request.args.get('hub.verify_token')
         challenge = request.args.get('hub.challenge')
         
-        # التأكد من صحة الوضع ورمز التحقق
         if mode and token:
             if mode == 'subscribe' and token == VERIFY_TOKEN:
                 print('WEBHOOK_VERIFIED')
-                # إذا كان الرمز صحيحاً، نُرجع الـ challenge
                 return challenge, 200
             else:
-                # رمز التحقق غير مطابق
                 return 'Verification token mismatch', 403
         
-        # إذا لم يتم إرسال البارامترات المطلوبة
         return 'Missing required parameters', 400
 
-    # 2. استقبال الأحداث (POST Request)
+    # 2. استقبال الأحداث ومعالجتها (POST Request)
     elif request.method == 'POST':
         data = request.json
         print('Received Webhook Data:', data)
 
-        # المنطق لمعالجة رسائل الماسنجر أو أحداث المنشورات يوضع هنا لاحقاً
-        
-        # --- معالجة الرسائل (مثال بسيط) ---
         if data.get('object') == 'page':
             for entry in data.get('entry', []):
                 for messaging_event in entry.get('messaging', []):
-                    # نحدد هنا ما إذا كانت رسالة
+                    
+                    sender_id = messaging_event['sender']['id']
+                    
+                    # معالجة الرسائل النصية الواردة
                     if messaging_event.get('message'):
-                        sender_id = messaging_event['sender']['id']
-                        message_text = messaging_event['message']['text']
-                        print(f"Message from {sender_id}: {message_text}")
-                        
-                        # هنا ستضيف المنطق للرد التلقائي على أوامر مثل "مباريات اليوم"
-                        
-                        # يجب أن نُرجع 200 OK لفيسبوك لتجنب إرسال الحدث مجدداً
-        return 'EVENT_RECEIVED', 200
+                        if 'text' in messaging_event['message']:
+                            message_text = messaging_event['message']['text']
+                            handle_message(sender_id, message_text)
+                            
+                    # معالجة الـ Postbacks (لتنفيذ الأوامر من الأزرار)
+                    elif messaging_event.get('postback'):
+                        payload = messaging_event['postback']['payload']
+                        print(f"Received Postback Payload: {payload}")
+                        # يمكن استدعاء handle_message(sender_id, payload) هنا أيضاً
+                    
+                    # ملاحظة: يمكنك إضافة منطق معالجة لأحداث feed هنا لاحقاً
 
-# تشغيل التطبيق (للتجربة المحلية فقط، Render يستخدم gunicorn)
+        # يجب أن نُرجع 200 OK لفيسبوك لتجنب إعادة إرسال الحدث
+        return 'EVENT_RECEIVED', 200
+        
+    return 'Invalid method', 405
+
+
+# أمر تشغيل التطبيق (Render يستخدم Gunicorn)
 if __name__ == '__main__':
-    app.run(debug=True)
+    # ملاحظة: هذا التشغيل للتجربة المحلية فقط، وليس للإنتاج على Render
+    app.run(debug=True, port=int(os.environ.get('PORT', 5000)))
