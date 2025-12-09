@@ -6,9 +6,9 @@ app = Flask(__name__)
 
 # --- متغيرات البيئة ---
 # يجب تعيين هذا المتغير في إعدادات Render (VERIFY_TOKEN)
-VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN', 'GOALIXY_SECRET_TOKEN') 
-# رمز الوصول للصفحة (نحتاجه لاحقاً لإرسال الردود)
-PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
+VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN') 
+FB_PAGE_TOKEN = os.environ.get('FB_PAGE_TOKEN') 
+FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 
 # المسار الرئيسي للـ Webhook
 # يجب أن يكون هذا هو الرابط الذي أدخلته في Meta Developers (مثلاً: https://your-app.onrender.com/webhook)
