@@ -1,27 +1,50 @@
 import os
 import requests
 import json
-from datetime import date, datetime
-from flask import Flask, request, jsonify
+from datetime import date
+from flask import Flask, request
 
 # تهيئة تطبيق Flask
 app = Flask(__name__)
 
-# --- متغيرات البيئة (يتم جلبها من إعدادات Render) ---
+# --- متغيرات البيئة الأساسية ---
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN') 
 FB_PAGE_TOKEN = os.environ.get('FB_PAGE_TOKEN') 
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 
-# متغيرات API الرياضي
-RAPIDAPI_HOST = os.environ.get('RAPIDAPI_HOST')
-RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY')
+# --- إعدادات API لمنطق Failover وتنسيق التاريخ ---
+API_CONFIGS = [
+    {
+        'HOST': os.environ.get('RAPIDAPI_HOST1'),
+        'KEY': os.environ.get('RAPIDAPI_KEY1'),
+        'PATH': '/football-get-matches-by-date', # API 1: المسار الذي يحتاج YYYYMMDD
+        'NAME': 'API 1 (Free-Live)',
+        'DATE_FORMAT': '%Y%m%d', # تنسيق التاريخ المطلوب: 20241107
+        'NEEDS_DATE': True
+    },
+    {
+        'HOST': os.environ.get('RAPIDAPI_HOST2'), 
+        'KEY': os.environ.get('RAPIDAPI_KEY2'),
+        'PATH': '/latestsoccer.php', # API 2: لا يحتاج بارامتر date
+        'NAME': 'API 2 (TheSportsDB)',
+        'DATE_FORMAT': '', 
+        'NEEDS_DATE': False # لا نرسل بارامتر التاريخ لهذا API
+    },
+    {
+        'HOST': os.environ.get('RAPIDAPI_HOST3'), 
+        'KEY': os.environ.get('RAPIDAPI_KEY3'),
+        'PATH': '/get-matches/events-by-date', # API 3: المسار الذي يحتاج YYYY-MM-DD
+        'NAME': 'API 3 (LiveScore)',
+        'DATE_FORMAT': '%Y-%m-%d', # تنسيق التاريخ الشائع: 2024-11-07
+        'NEEDS_DATE': True
+    }
+]
 
 # --- متغيرات الصور الموحدة (يجب استبدالها بروابط عامة خاصة بك) ---
-# يجب تغيير هذه الروابط قبل الدفع!
 IMAGE_URLS = {
-    'GOAL': "https://your-domain.com/images/goal_icon.jpg",  # رابط صورة الهدف
-    'START': "https://your-domain.com/images/start_match.jpg", # رابط صورة بداية المباراة
-    'RED_CARD': "https://your-domain.com/images/red_card.jpg" # رابط صورة البطاقة الحمراء
+    'GOAL': "https://your-domain.com/images/goal_icon.jpg",  
+    'START': "https://your-domain.com/images/start_match.jpg", 
+    'RED_CARD': "https://your-domain.com/images/red_card.jpg" 
 }
 
 
@@ -30,33 +53,24 @@ IMAGE_URLS = {
 # =================================================================
 
 def post_to_facebook(message, image_url, language='ar'):
-    """
-    تنشر رسالة وصورة على الصفحة مع تصفية الجمهور (Targeting) حسب اللغة.
-    """
+    """ تنشر رسالة وصورة مع تصفية الجمهور. """
     if not FB_PAGE_TOKEN or not FB_PAGE_ID:
         print("Error: FB_PAGE_TOKEN or FB_PAGE_ID is missing.")
         return
 
     # تحديد إعدادات التصفية (Targeting)
     if language == 'ar':
-        # الجمهور العربي (الدول العربية + اللغة العربية)
-        # 6 = رمز اللغة العربية
         targeting = {
             "geo_locations": {"countries": ["DZ", "EG", "SA", "AE", "MA", "TN", "QA", "KW"]},
             "locales": [6] 
         }
-    else: # English (en)
-        # الجمهور الأجنبي (بعض الدول غير العربية + اللغة الإنجليزية)
-        # 1 = رمز اللغة الإنجليزية
+    else: 
         targeting = {
             "geo_locations": {"countries": ["US", "GB", "FR", "DE", "CA", "ES"]},
             "locales": [1] 
         }
     
-    # تحويل التصفية إلى نص JSON
     targeting_json = json.dumps(targeting)
-
-    # نقطة النهاية لنشر صورة ورسالة
     url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/photos"
 
     payload = {
@@ -75,9 +89,6 @@ def post_to_facebook(message, image_url, language='ar'):
         print(f"Error publishing post: {e}")
         if response is not None:
              print(f"Response details: {response.text}")
-
-
-# --- دوال الأحداث المُحددة ---
 
 def publish_start_event(match_details):
     """ تنشئ منشور بداية المباراة """
@@ -102,7 +113,6 @@ def publish_start_event(match_details):
     )
     post_to_facebook(english_message, IMAGE_URLS['START'], language='en')
 
-
 def publish_goal_event(match_details, scorer, current_result):
     """ تنشئ منشور هدف جديد """
     
@@ -122,66 +132,78 @@ def publish_goal_event(match_details, scorer, current_result):
     )
     post_to_facebook(english_message, IMAGE_URLS['GOAL'], language='en')
 
-
 # =================================================================
-#                       وظائف API الرياضي والردود
+#                       وظائف API الرياضي والردود (FAILOVER)
 # =================================================================
 
 def get_today_matches():
     """
-    جلب مباريات اليوم من RapidAPI وعرضها في قائمة بسيطة.
-    ** تم تحديث المسار هنا **
+    جلب مباريات اليوم باستخدام منطق Failover (تجربة أكثر من API).
     """
-    if not RAPIDAPI_HOST or not RAPIDAPI_KEY:
-        return "لا يمكن الاتصال بمصدر البيانات الرياضية حالياً. (راجع RAPIDAPI Keys)"
-
-    # تحديد التاريخ اليوم بتنسيق YYYY-MM-DD
-    today_date = date.today().strftime("%Y-%m-%d")
-
-    # *****************************************************************
-    # التعديل: استخدام المسار الصحيح للـ API الجديد
-    # *****************************************************************
-    url = f"https://{RAPIDAPI_HOST}/get-matches/events-by-date"
+    from datetime import date
     
-    # البارامتر المطلوب لجلب المباريات باليوم
-    querystring = {"date": today_date}
-
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": RAPIDAPI_HOST
-    }
-
-    try:
-        response = requests.get(url, headers=headers, params=querystring, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+    # تجربة كل إعدادات API بالترتيب
+    for config in API_CONFIGS:
+        host = config.get('HOST')
+        key = config.get('KEY')
+        path = config.get('PATH')
+        api_name = config.get('NAME')
+        date_format = config.get('DATE_FORMAT')
+        needs_date = config.get('NEEDS_DATE')
         
-        match_list = ["*مباريات اليوم:*\n"]
-        
-        # يجب تعديل هذا المنطق لاحقاً ليناسب هيكل JSON للـ API الجديد
-        if data and data.get('response'):
-            matches = data['response']
+        # تخطي إذا كانت المتغيرات غير مُعرفة في Render
+        if not host or not key:
+            continue
             
-            if not matches:
-                return "لا توجد مباريات مقررة لهذا اليوم."
-                
-            for match in matches:
-                # هذه الحقول مفترضة، وقد تحتاج تعديلها لتناسب الـ API الجديد
-                home_team = match.get('home_team', 'فريق غير معروف')
-                away_team = match.get('away_team', 'فريق غير معروف')
-                match_time = match.get('time', 'N/A')
-                league_name = match.get('league_name', 'غير محددة')
-                
-                match_list.append(f"*{match_time}* | {home_team} - {away_team} ({league_name})")
-                
-            return "\n".join(match_list)
+        url = f"https://{host}{path}"
+        querystring = {}
         
-        # إذا فشل تحليل JSON، نطبع رسالة خطأ
-        return f"حدث خطأ في استقبال بيانات المباريات. (الرد: {data})"
+        # إعداد بارامتر التاريخ إذا كان الـ API يتطلبه
+        if needs_date:
+            today_date = date.today().strftime(date_format)
+            querystring = {"date": today_date}
 
-    except requests.exceptions.RequestException as e:
-        print(f"RapidAPI Error in get_today_matches: {e}")
-        return "آسف، فشل الاتصال بخدمة النتائج الرياضية."
+        headers = {
+            "X-RapidAPI-Key": key,
+            "X-RapidAPI-Host": host
+        }
+
+        try:
+            print(f"Attempting connection with API: {api_name} at {url}")
+            response = requests.get(url, headers=headers, params=querystring, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            # --- تحليل البيانات والرد عند النجاح ---
+            if data and data.get('response'):
+                
+                match_list = [f"*مباريات اليوم (المصدر: {api_name}):*\n"]
+                matches = data['response']
+                
+                if not matches:
+                    return f"لا توجد مباريات مقررة لهذا اليوم (المصدر: {api_name})."
+                    
+                # NOTE: يجب أن يتم تعديل منطق تحليل JSON هنا ليناسب هيكل كل API
+                for match in matches:
+                    try:
+                        # هذا نموذج تحليل مبسط؛ قد تحتاج إلى تعديله
+                        home_team = match.get('teams', {}).get('home', {}).get('name', 'N/A')
+                        away_team = match.get('teams', {}).get('away', {}).get('name', 'N/A')
+                        match_list.append(f"{home_team} vs {away_team}")
+                    except:
+                        # في حال فشل تحليل هيكل البيانات لهذا الـ API
+                        match_list.append(f"تم جلب البيانات من {api_name}، لكن تحليل الهيكل فشل.")
+                        break 
+                        
+                return "\n".join(match_list)
+            
+        except requests.exceptions.RequestException as e:
+            # فشل الاتصال بهذا API (403, 404, Timeout)، نطبع الخطأ وننتقل للتجربة التالية
+            print(f"API Failed: {api_name}. Error: {e}")
+            continue 
+            
+    # إذا فشلت جميع محاولات الاتصال
+    return "آسف، فشلت جميع محاولات الاتصال بمصادر النتائج الرياضية."
 
 
 def send_message(recipient_id, message_text):
