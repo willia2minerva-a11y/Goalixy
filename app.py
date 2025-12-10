@@ -1,4 +1,3 @@
-
 import os
 import requests
 import json
@@ -13,45 +12,38 @@ VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 FB_PAGE_TOKEN = os.environ.get('FB_PAGE_TOKEN') 
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 
-# --- إعدادات API لمنطق Failover وتنسيق التاريخ ---
-# يتم تجربة هذه APIs بالترتيب (1 ثم 2 ثم 3 ثم 4)
+# مفتاح Football-Data.org (يجب وضعه كمتغير بيئة في Render)
+FOOTBALL_DATA_KEY = os.environ.get('FOOTBALL_DATA_KEY') 
+# ملاحظة: قم بتغيير اسم RAPIDAPI_KEY3 إلى FOOTBALL_DATA_KEY في Render
+
+# --- إعدادات API لمنطق Failover (الخطة الجديدة) ---
 API_CONFIGS = [
-    # 1. API 1 (محاولة الـ 403 السابقة)
+    # 1. OpenLigaDB (الأولوية القصوى - مجاني، بدون مفتاح)
     {
-        'HOST': os.environ.get('RAPIDAPI_HOST1'),
-        'KEY': os.environ.get('RAPIDAPI_KEY1'),
-        'PATH': '/football-get-matches-by-date', 
-        'NAME': 'API 1 (Free-Live)',
-        'DATE_FORMAT': '%Y%m%d', 
-        'NEEDS_DATE': True
+        'HOST': 'api.openligadb.de', 
+        'KEY': None, 
+        'PATH': '/getmatchdata/', 
+        'NAME': 'OpenLigaDB',
+        'DATE_FORMAT': '', # لا يحتاج بارامتر تاريخ
+        'NEEDS_DATE': False 
     },
-    # 2. API 2 (TheSportsDB الذي اشتركت به على RapidAPI)
+    # 2. ScoreBat API (مجاني، بدون مفتاح)
     {
-        'HOST': os.environ.get('RAPIDAPI_HOST2'), 
-        'KEY': os.environ.get('RAPIDAPI_KEY2'),
-        'PATH': '/latestsoccer.php', 
-        'NAME': 'API 2 (TheSportsDB-Rapid)',
+        'HOST': 'www.scorebat.com', 
+        'KEY': None, 
+        'PATH': '/video-api/v3/', 
+        'NAME': 'ScoreBat',
         'DATE_FORMAT': '', 
         'NEEDS_DATE': False 
     },
-    # 3. API 3 (LiveScore)
+    # 3. Football-Data.org (مفتاح خارجي، سهل الحصول عليه)
     {
-        'HOST': os.environ.get('RAPIDAPI_HOST3'), 
-        'KEY': os.environ.get('RAPIDAPI_KEY3'),
-        'PATH': '/get-matches/events-by-date', 
-        'NAME': 'API 3 (LiveScore)',
-        'DATE_FORMAT': '%Y-%m-%d', 
-        'NEEDS_DATE': True
-    },
-    # 4. API 4 الاحتياطي المفتوح (TheSportsDB - لتجاوز مشاكل المفاتيح)
-    {
-        'HOST': 'www.thesportsdb.com', # API مفتوح
-        'KEY': None, # لا يحتاج مفتاح
-        'PATH': '/api/v1/json/1/eventsday.php', 
-        'NAME': 'API 4 (Open Backup)',
+        'HOST': 'api.football-data.org', 
+        'KEY': FOOTBALL_DATA_KEY,
+        'PATH': '/v4/matches', 
+        'NAME': 'Football-Data',
         'DATE_FORMAT': '%Y-%m-%d',
-        'NEEDS_DATE': True,
-        'DATE_PARAM_NAME': 'd' # هذا الـ API يستخدم البارامتر 'd' للتاريخ
+        'NEEDS_DATE': True
     }
 ]
 
@@ -64,100 +56,13 @@ IMAGE_URLS = {
 
 
 # =================================================================
-#                         وظائف النشر (POSTING)
-# =================================================================
-
-def post_to_facebook(message, image_url, language='ar'):
-    """ تنشر رسالة وصورة مع تصفية الجمهور. """
-    if not FB_PAGE_TOKEN or not FB_PAGE_ID:
-        print("Error: FB_PAGE_TOKEN or FB_PAGE_ID is missing.")
-        return
-
-    # تحديد إعدادات التصفية (Targeting)
-    if language == 'ar':
-        targeting = {
-            "geo_locations": {"countries": ["DZ", "EG", "SA", "AE", "MA", "TN", "QA", "KW"]},
-            "locales": [6] 
-        }
-    else: 
-        targeting = {
-            "geo_locations": {"countries": ["US", "GB", "FR", "DE", "CA", "ES"]},
-            "locales": [1] 
-        }
-    
-    targeting_json = json.dumps(targeting)
-    url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/photos"
-
-    payload = {
-        'message': message,
-        'url': image_url,
-        'access_token': FB_PAGE_TOKEN,
-        'targeting': targeting_json, 
-        'published': 'true'
-    }
-
-    try:
-        response = requests.post(url, data=payload)
-        response.raise_for_status()
-        print(f"Post successful for language {language}: {response.json()}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error publishing post: {e}")
-        if response is not None:
-             print(f"Response details: {response.text}")
-
-def publish_start_event(match_details):
-    """ تنشئ منشور بداية المباراة """
-    
-    # 1. المنشور العربي
-    arabic_message = (
-        f"🚨 بداية المباراة!\n"
-        f"{match_details['home_team']} 🆚 {match_details['away_team']}\n"
-        f"🏆 البطولة: {match_details['league_name']}\n"
-        f"🎙️ المعلق: [اسم المعلق]\n"
-        f"📺 القناة: [اسم القناة]"
-    )
-    post_to_facebook(arabic_message, IMAGE_URLS['START'], language='ar')
-    
-    # 2. المنشور الإنجليزي
-    english_message = (
-        f"🚨 Match KICK-OFF!\n"
-        f"{match_details['home_team']} 🆚 {match_details['away_team']}\n"
-        f"🏆 Competition: {match_details['league_name']}\n"
-        f"🎙️ Commentator: [Commentator Name]\n"
-        f"📺 Channel: [Channel Name]"
-    )
-    post_to_facebook(english_message, IMAGE_URLS['START'], language='en')
-
-def publish_goal_event(match_details, scorer, current_result):
-    """ تنشئ منشور هدف جديد """
-    
-    # 1. المنشور العربي
-    arabic_message = (
-        f"⚽️ هـدف! سجل اللاعب {scorer} هدفاً.\n"
-        f"النتيجة الحالية: {current_result}\n"
-        f"المباراة: {match_details['home_team']} ضد {match_details['away_team']}"
-    )
-    post_to_facebook(arabic_message, IMAGE_URLS['GOAL'], language='ar')
-
-    # 2. المنشور الإنجليزي
-    english_message = (
-        f"⚽️ GOAL! {scorer} scores a stunning goal.\n"
-        f"Current Score: {current_result}\n"
-        f"Match: {match_details['home_team']} vs {match_details['away_team']}"
-    )
-    post_to_facebook(english_message, IMAGE_URLS['GOAL'], language='en')
-
-# =================================================================
 #                       وظائف API الرياضي والردود (FAILOVER)
 # =================================================================
 
 def get_today_matches():
-    """
-    جلب مباريات اليوم باستخدام منطق Failover (تجربة أكثر من API).
-    """
+    """ جلب مباريات اليوم باستخدام منطق Failover (تجربة 3 APIs جديدة). """
     from datetime import date
     
-    # تجربة كل إعدادات API بالترتيب
     for config in API_CONFIGS:
         host = config.get('HOST')
         key = config.get('KEY')
@@ -165,27 +70,28 @@ def get_today_matches():
         api_name = config.get('NAME')
         date_format = config.get('DATE_FORMAT')
         needs_date = config.get('NEEDS_DATE')
-        date_param_name = config.get('DATE_PARAM_NAME', 'date') 
         
-        # تخطي إذا كانت المتغيرات غير مُعرفة (للـ RapidAPI)
-        if (api_name != 'API 4 (Open Backup)') and (not host or not key):
+        # تخطي إذا كان API يتطلب مفتاحاً ولم يتم إعداده
+        if api_name == 'Football-Data' and not key:
             continue
-        
+            
         url = f"https://{host}{path}"
         querystring = {}
-        
-        # إعداد الرؤوس (Headers) والمفاتيح
         headers = {}
-        if key: 
-            headers = {
-                "X-RapidAPI-Key": key,
-                "X-RapidAPI-Host": host
-            }
+        
+        # إعداد الرؤوس والمفاتيح (لـ Football-Data فقط)
+        if api_name == 'Football-Data': 
+            headers = {"X-Auth-Token": key}
             
-        # إعداد بارامتر التاريخ إذا كان الـ API يتطلبه
+        # إعداد بارامتر التاريخ
         if needs_date:
             today_date_formatted = date.today().strftime(date_format)
-            querystring = {date_param_name: today_date_formatted}
+            
+            if api_name == 'Football-Data':
+                # هذا API يستخدم dateFrom/dateTo
+                querystring = {"dateFrom": today_date_formatted, "dateTo": today_date_formatted}
+            else:
+                querystring = {"date": today_date_formatted}
 
 
         try:
@@ -195,33 +101,46 @@ def get_today_matches():
             data = response.json()
             
             # --- تحليل البيانات والرد عند النجاح ---
-            if data: 
-                match_list = [f"*مباريات اليوم (المصدر: {api_name}):*\n"]
-                
-                # 1. تحليل هيكل API 4 (TheSportsDB المفتوح)
-                if api_name == 'API 4 (Open Backup)' and data.get('events'):
-                    for event in data['events']:
-                         match_list.append(f"• {event.get('strEvent')}")
-                         
-                    if len(match_list) > 1:
-                        return "\n".join(match_list)
-                
-                # 2. تحليل هيكل APIs RapidAPI (الافتراضي)
-                elif data.get('response'):
-                     matches = data['response']
-                     if matches:
-                         for match in matches:
-                             # نموذج تحليل بسيط
-                             home_team = match.get('teams', {}).get('home', {}).get('name', 'N/A')
-                             away_team = match.get('teams', {}).get('away', {}).get('name', 'N/A')
-                             match_list.append(f"• {home_team} vs {away_team}")
-                         return "\n".join(match_list)
-                
-                # إذا تم الاتصال ونجح، ولكن لم نجد البيانات المطلوبة
-                return f"تم الاتصال بـ {api_name}، لكن لا توجد مباريات اليوم أو هيكل البيانات غير مدعوم."
+            
+            match_list = [f"*مباريات اليوم (المصدر: {api_name}):*\n"]
+            
+            # 1. تحليل هيكل OpenLigaDB (مصفوفة JSON مباشرة)
+            if api_name == 'OpenLigaDB' and isinstance(data, list):
+                if not data:
+                    return f"لا توجد مباريات مقررة لهذا اليوم (المصدر: {api_name})."
+                    
+                for match in data:
+                    home_team = match.get('team1', {}).get('teamName', 'N/A')
+                    away_team = match.get('team2', {}).get('teamName', 'N/A')
+                    match_list.append(f"• {home_team} vs {away_team}")
+                return "\n".join(match_list)
+            
+            # 2. تحليل هيكل ScoreBat (مصفوفة JSON مباشرة)
+            elif api_name == 'ScoreBat' and isinstance(data, list):
+                if not data:
+                    return f"لا توجد مباريات مقررة لهذا اليوم (المصدر: {api_name})."
+                    
+                for match in data:
+                    home_team = match.get('side1', {}).get('name', 'N/A')
+                    away_team = match.get('side2', {}).get('name', 'N/A')
+                    match_list.append(f"• {home_team} vs {away_team}")
+                return "\n".join(match_list)
+
+            # 3. تحليل هيكل Football-Data.org (يحتوي على حقل 'matches')
+            elif api_name == 'Football-Data' and data.get('matches'):
+                 matches = data['matches']
+                 if matches:
+                     for match in matches:
+                         home_team = match.get('homeTeam', {}).get('name', 'N/A')
+                         away_team = match.get('awayTeam', {}).get('name', 'N/A')
+                         match_list.append(f"• {home_team} vs {away_team}")
+                     return "\n".join(match_list)
+            
+            # إذا تم الاتصال ونجح (200 OK)، ولكن لم يتم تحليل البيانات
+            return f"تم الاتصال بـ {api_name}، لكن لا توجد مباريات اليوم أو هيكل البيانات غير مدعوم."
             
         except requests.exceptions.RequestException as e:
-            # فشل الاتصال بهذا API، نطبع الخطأ وننتقل للتجربة التالية
+            # فشل الاتصال، نطبع الخطأ وننتقل للتجربة التالية
             print(f"API Failed: {api_name}. Error: {e}")
             continue 
             
