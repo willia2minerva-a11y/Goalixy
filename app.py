@@ -14,29 +14,42 @@ FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 
 # --- إعدادات API لمنطق Failover وتنسيق التاريخ ---
 API_CONFIGS = [
+    # 1. API 1 (محاولة الـ 403 السابقة)
     {
         'HOST': os.environ.get('RAPIDAPI_HOST1'),
         'KEY': os.environ.get('RAPIDAPI_KEY1'),
-        'PATH': '/football-get-matches-by-date', # API 1: المسار الذي يحتاج YYYYMMDD
+        'PATH': '/football-get-matches-by-date', 
         'NAME': 'API 1 (Free-Live)',
-        'DATE_FORMAT': '%Y%m%d', # تنسيق التاريخ المطلوب: 20241107
+        'DATE_FORMAT': '%Y%m%d', 
         'NEEDS_DATE': True
     },
+    # 2. API 2 (TheSportsDB الذي اشتركت به على RapidAPI)
     {
         'HOST': os.environ.get('RAPIDAPI_HOST2'), 
         'KEY': os.environ.get('RAPIDAPI_KEY2'),
-        'PATH': '/latestsoccer.php', # API 2: لا يحتاج بارامتر date
+        'PATH': '/latestsoccer.php', 
         'NAME': 'API 2 (TheSportsDB)',
         'DATE_FORMAT': '', 
-        'NEEDS_DATE': False # لا نرسل بارامتر التاريخ لهذا API
+        'NEEDS_DATE': False 
     },
+    # 3. API 3 (LiveScore)
     {
         'HOST': os.environ.get('RAPIDAPI_HOST3'), 
         'KEY': os.environ.get('RAPIDAPI_KEY3'),
-        'PATH': '/get-matches/events-by-date', # API 3: المسار الذي يحتاج YYYY-MM-DD
+        'PATH': '/get-matches/events-by-date', 
         'NAME': 'API 3 (LiveScore)',
-        'DATE_FORMAT': '%Y-%m-%d', # تنسيق التاريخ الشائع: 2024-11-07
+        'DATE_FORMAT': '%Y-%m-%d', 
         'NEEDS_DATE': True
+    },
+    # 4. API 4 الاحتياطي المفتوح (للتأكد من عمل الكود)
+    {
+        'HOST': 'www.thesportsdb.com', # API مفتوح
+        'KEY': None, # لا يحتاج مفتاح
+        'PATH': '/api/v1/json/1/eventsday.php', 
+        'NAME': 'API 4 (Open Backup)',
+        'DATE_FORMAT': '%Y-%m-%d',
+        'NEEDS_DATE': True,
+        'DATE_PARAM_NAME': 'd' # هذا الـ API يستخدم البارامتر 'd' للتاريخ
     }
 ]
 
@@ -150,23 +163,28 @@ def get_today_matches():
         api_name = config.get('NAME')
         date_format = config.get('DATE_FORMAT')
         needs_date = config.get('NEEDS_DATE')
+        date_param_name = config.get('DATE_PARAM_NAME', 'date') # جديد
         
-        # تخطي إذا كانت المتغيرات غير مُعرفة في Render
-        if not host or not key:
+        # تخطي إذا كانت المتغيرات غير مُعرفة (معالجة APIs RapidAPI)
+        if (api_name != 'API 4 (Open Backup)') and (not host or not key):
             continue
+        
+        # إذا كان API مفتوحاً، لا نرسل مفاتيح
+        headers = {}
+        if key: 
+            headers = {
+                "X-RapidAPI-Key": key,
+                "X-RapidAPI-Host": host
+            }
             
         url = f"https://{host}{path}"
         querystring = {}
         
         # إعداد بارامتر التاريخ إذا كان الـ API يتطلبه
         if needs_date:
-            today_date = date.today().strftime(date_format)
-            querystring = {"date": today_date}
+            today_date_formatted = date.today().strftime(date_format)
+            querystring = {date_param_name: today_date_formatted}
 
-        headers = {
-            "X-RapidAPI-Key": key,
-            "X-RapidAPI-Host": host
-        }
 
         try:
             print(f"Attempting connection with API: {api_name} at {url}")
@@ -175,30 +193,34 @@ def get_today_matches():
             data = response.json()
             
             # --- تحليل البيانات والرد عند النجاح ---
-            if data and data.get('response'):
+            if data: # تحقق بسيط من وجود بيانات
                 
                 match_list = [f"*مباريات اليوم (المصدر: {api_name}):*\n"]
-                matches = data['response']
                 
-                if not matches:
-                    return f"لا توجد مباريات مقررة لهذا اليوم (المصدر: {api_name})."
-                    
-                # NOTE: يجب أن يتم تعديل منطق تحليل JSON هنا ليناسب هيكل كل API
-                for match in matches:
-                    try:
-                        # هذا نموذج تحليل مبسط؛ قد تحتاج إلى تعديله
-                        home_team = match.get('teams', {}).get('home', {}).get('name', 'N/A')
-                        away_team = match.get('teams', {}).get('away', {}).get('name', 'N/A')
-                        match_list.append(f"{home_team} vs {away_team}")
-                    except:
-                        # في حال فشل تحليل هيكل البيانات لهذا الـ API
-                        match_list.append(f"تم جلب البيانات من {api_name}، لكن تحليل الهيكل فشل.")
-                        break 
-                        
-                return "\n".join(match_list)
+                # *** NOTE: تحليل البيانات الفعلي يعتمد على هيكل JSON الذي يرجعه API ***
+                # هذا مجرد نموذج تحليل بسيط لـ TheSportsDB (الخيار المفتوح)
+                if api_name == 'API 4 (Open Backup)' and data.get('events'):
+                    for event in data['events']:
+                         match_list.append(f"{event.get('strEvent')}")
+                         
+                    if len(match_list) > 1:
+                        return "\n".join(match_list)
+                
+                # إذا لم يكن API 4، نفترض الهيكل المعتاد
+                elif data.get('response'):
+                     matches = data['response']
+                     if matches:
+                         for match in matches:
+                             home_team = match.get('teams', {}).get('home', {}).get('name', 'N/A')
+                             away_team = match.get('teams', {}).get('away', {}).get('name', 'N/A')
+                             match_list.append(f"{home_team} vs {away_team}")
+                         return "\n".join(match_list)
+                
+                # إذا تم استدعاء الـ API ونجح، ولكن لم نجد البيانات:
+                return f"تم الاتصال بـ {api_name} بنجاح، لكن لا توجد مباريات اليوم أو هيكل البيانات غير مدعوم."
             
         except requests.exceptions.RequestException as e:
-            # فشل الاتصال بهذا API (403, 404, Timeout)، نطبع الخطأ وننتقل للتجربة التالية
+            # فشل الاتصال بهذا API، نطبع الخطأ وننتقل للتجربة التالية
             print(f"API Failed: {api_name}. Error: {e}")
             continue 
             
@@ -241,7 +263,7 @@ def handle_message(sender_id, message_text):
         response_text = "أهلاً بك في Goalixy! لمعرفة آخر النتائج، اكتب 'مباريات اليوم'."
         
     elif lower_text == 'اختبار هدف':
-        # أمر للاختبار اليدوي لعمل دالة النشر والتصفية
+        # أمر لاختبار النشر والتصفية
         test_details = {
             'home_team': 'الجزائر', 
             'away_team': 'السنغال', 
