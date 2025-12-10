@@ -1,3 +1,4 @@
+
 import os
 import requests
 import json
@@ -13,6 +14,7 @@ FB_PAGE_TOKEN = os.environ.get('FB_PAGE_TOKEN')
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 
 # --- إعدادات API لمنطق Failover وتنسيق التاريخ ---
+# يتم تجربة هذه APIs بالترتيب (1 ثم 2 ثم 3 ثم 4)
 API_CONFIGS = [
     # 1. API 1 (محاولة الـ 403 السابقة)
     {
@@ -28,7 +30,7 @@ API_CONFIGS = [
         'HOST': os.environ.get('RAPIDAPI_HOST2'), 
         'KEY': os.environ.get('RAPIDAPI_KEY2'),
         'PATH': '/latestsoccer.php', 
-        'NAME': 'API 2 (TheSportsDB)',
+        'NAME': 'API 2 (TheSportsDB-Rapid)',
         'DATE_FORMAT': '', 
         'NEEDS_DATE': False 
     },
@@ -41,7 +43,7 @@ API_CONFIGS = [
         'DATE_FORMAT': '%Y-%m-%d', 
         'NEEDS_DATE': True
     },
-    # 4. API 4 الاحتياطي المفتوح (للتأكد من عمل الكود)
+    # 4. API 4 الاحتياطي المفتوح (TheSportsDB - لتجاوز مشاكل المفاتيح)
     {
         'HOST': 'www.thesportsdb.com', # API مفتوح
         'KEY': None, # لا يحتاج مفتاح
@@ -163,13 +165,16 @@ def get_today_matches():
         api_name = config.get('NAME')
         date_format = config.get('DATE_FORMAT')
         needs_date = config.get('NEEDS_DATE')
-        date_param_name = config.get('DATE_PARAM_NAME', 'date') # جديد
+        date_param_name = config.get('DATE_PARAM_NAME', 'date') 
         
-        # تخطي إذا كانت المتغيرات غير مُعرفة (معالجة APIs RapidAPI)
+        # تخطي إذا كانت المتغيرات غير مُعرفة (للـ RapidAPI)
         if (api_name != 'API 4 (Open Backup)') and (not host or not key):
             continue
         
-        # إذا كان API مفتوحاً، لا نرسل مفاتيح
+        url = f"https://{host}{path}"
+        querystring = {}
+        
+        # إعداد الرؤوس (Headers) والمفاتيح
         headers = {}
         if key: 
             headers = {
@@ -177,9 +182,6 @@ def get_today_matches():
                 "X-RapidAPI-Host": host
             }
             
-        url = f"https://{host}{path}"
-        querystring = {}
-        
         # إعداد بارامتر التاريخ إذا كان الـ API يتطلبه
         if needs_date:
             today_date_formatted = date.today().strftime(date_format)
@@ -193,31 +195,30 @@ def get_today_matches():
             data = response.json()
             
             # --- تحليل البيانات والرد عند النجاح ---
-            if data: # تحقق بسيط من وجود بيانات
-                
+            if data: 
                 match_list = [f"*مباريات اليوم (المصدر: {api_name}):*\n"]
                 
-                # *** NOTE: تحليل البيانات الفعلي يعتمد على هيكل JSON الذي يرجعه API ***
-                # هذا مجرد نموذج تحليل بسيط لـ TheSportsDB (الخيار المفتوح)
+                # 1. تحليل هيكل API 4 (TheSportsDB المفتوح)
                 if api_name == 'API 4 (Open Backup)' and data.get('events'):
                     for event in data['events']:
-                         match_list.append(f"{event.get('strEvent')}")
+                         match_list.append(f"• {event.get('strEvent')}")
                          
                     if len(match_list) > 1:
                         return "\n".join(match_list)
                 
-                # إذا لم يكن API 4، نفترض الهيكل المعتاد
+                # 2. تحليل هيكل APIs RapidAPI (الافتراضي)
                 elif data.get('response'):
                      matches = data['response']
                      if matches:
                          for match in matches:
+                             # نموذج تحليل بسيط
                              home_team = match.get('teams', {}).get('home', {}).get('name', 'N/A')
                              away_team = match.get('teams', {}).get('away', {}).get('name', 'N/A')
-                             match_list.append(f"{home_team} vs {away_team}")
+                             match_list.append(f"• {home_team} vs {away_team}")
                          return "\n".join(match_list)
                 
-                # إذا تم استدعاء الـ API ونجح، ولكن لم نجد البيانات:
-                return f"تم الاتصال بـ {api_name} بنجاح، لكن لا توجد مباريات اليوم أو هيكل البيانات غير مدعوم."
+                # إذا تم الاتصال ونجح، ولكن لم نجد البيانات المطلوبة
+                return f"تم الاتصال بـ {api_name}، لكن لا توجد مباريات اليوم أو هيكل البيانات غير مدعوم."
             
         except requests.exceptions.RequestException as e:
             # فشل الاتصال بهذا API، نطبع الخطأ وننتقل للتجربة التالية
