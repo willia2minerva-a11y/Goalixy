@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: goalixy-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: FB_PAGE_TOKEN
+        sync: false
+      - key: FB_PAGE_ID
+        sync: false
+      - key: FACEBOOK_VERIFY_TOKEN
+        value: goalixy_123
+      - key: TIMEZONE
+        value: Africa/Algiers
+      - key: PORT
+        value: 8000
+    autoDeploy: true
